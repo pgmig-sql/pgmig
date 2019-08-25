@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS pkg_log (
 );
 CREATE SEQUENCE IF NOT EXISTS pkg_id_seq;
 ALTER TABLE pkg_log ALTER COLUMN id SET DEFAULT NEXTVAL('pkg_id_seq');
-SELECT poma.comment('t', 'pkg_log', 'Package operations history'
+SELECT comment('t', 'pkg_log', 'Package operations history'
 , 'id',         'Order number'
 , 'code',       'Package code'
 , 'schemas',    'List of schemes created by the package'

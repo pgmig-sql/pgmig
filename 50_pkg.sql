@@ -10,7 +10,7 @@
 CREATE OR REPLACE FUNCTION pkg(a_code TEXT, a_schema TEXT DEFAULT NULL) RETURNS SETOF pkg STABLE LANGUAGE 'sql' AS
 $_$
   -- a_code:  пакет
-  SELECT * FROM poma.pkg WHERE code = $1 AND (a_schema is NULL OR a_schema = ANY(schemas));
+  SELECT * FROM pgmig.pkg WHERE code = $1 AND (a_schema is NULL OR a_schema = ANY(schemas));
 $_$;
 
 -- ----------------------------------------------------------------------------
@@ -30,7 +30,7 @@ $_$
   BEGIN
     -- defaults
     FOR r IN SELECT * 
-      FROM poma.pkg_default_protected
+      FROM pgmig.pkg_default_protected
       WHERE pkg = a_pkg
         AND schema IS NOT DISTINCT FROM a_schema
         AND is_active = NOT a_is_on
@@ -57,7 +57,7 @@ $_$
     IF v_self_default IS NOT NULL THEN
       EXECUTE v_self_default;
     END IF;
-    UPDATE poma.pkg_default_protected SET is_active = a_is_on
+    UPDATE pgmig.pkg_default_protected SET is_active = a_is_on
       WHERE pkg = a_pkg
         AND schema IS NOT DISTINCT FROM a_schema
         AND is_active = NOT a_is_on
@@ -72,14 +72,14 @@ $_$
     
     v_self_default := NULL;
     FOR r IN SELECT * 
-      FROM poma.pkg_fkey_protected
+      FROM pgmig.pkg_fkey_protected
       WHERE is_active = NOT a_is_on
         AND CASE WHEN a_is_on THEN
-          rel NOT IN (SELECT rel FROM poma.pkg_fkey_required_by WHERE required_by NOT IN (SELECT code FROM poma.pkg))
-            AND EXISTS (SELECT 1 FROM poma.pkg WHERE code = pkg) and EXISTS (SELECT 1 FROM poma.pkg where schemas @> array[pkg_fkey_protected.schema]::name[])
+          rel NOT IN (SELECT rel FROM pgmig.pkg_fkey_required_by WHERE required_by NOT IN (SELECT code FROM pgmig.pkg))
+            AND EXISTS (SELECT 1 FROM pgmig.pkg WHERE code = pkg) and EXISTS (SELECT 1 FROM pgmig.pkg where schemas @> array[pkg_fkey_protected.schema]::name[])
           ELSE
           (pkg = a_pkg AND schema IS NOT DISTINCT FROM a_schema)
-          OR rel IN (SELECT rel FROM poma.pkg_fkey_required_by WHERE required_by = a_pkg)
+          OR rel IN (SELECT rel FROM pgmig.pkg_fkey_required_by WHERE required_by = a_pkg)
         END
     LOOP
       v_sql := CASE WHEN a_is_on THEN
@@ -105,14 +105,14 @@ $_$
     IF v_self_default IS NOT NULL THEN
       EXECUTE v_self_default;
     END IF;
-    UPDATE poma.pkg_fkey_protected SET is_active = a_is_on
+    UPDATE pgmig.pkg_fkey_protected SET is_active = a_is_on
       WHERE is_active = NOT a_is_on
         AND CASE WHEN a_is_on THEN
-          rel NOT IN (SELECT rel FROM poma.pkg_fkey_required_by WHERE required_by NOT IN (SELECT code FROM poma.pkg))
-            AND EXISTS (SELECT 1 FROM poma.pkg WHERE code = pkg) and EXISTS (SELECT 1 FROM poma.pkg where schemas @> array[pkg_fkey_protected.schema]::name[])
+          rel NOT IN (SELECT rel FROM pgmig.pkg_fkey_required_by WHERE required_by NOT IN (SELECT code FROM pgmig.pkg))
+            AND EXISTS (SELECT 1 FROM pgmig.pkg WHERE code = pkg) and EXISTS (SELECT 1 FROM pgmig.pkg where schemas @> array[pkg_fkey_protected.schema]::name[])
           ELSE
           (pkg = a_pkg AND schema IS NOT DISTINCT FROM a_schema)
-          OR rel IN (SELECT rel FROM poma.pkg_fkey_required_by WHERE required_by = a_pkg)
+          OR rel IN (SELECT rel FROM pgmig.pkg_fkey_required_by WHERE required_by = a_pkg)
         END
     ;
     RETURN;
@@ -125,9 +125,9 @@ $_$;
 
   1. Проверить наличие (для create) или отсутствие (для build, drop, erase) пакета.
     При успехе: вернуть a_blank (если задан) или ошибку (иначе)
-  2. Для drop, erase - вернуть ошибку, если есть зависимости от пакета (poma.pkg_required_by) и
+  2. Для drop, erase - вернуть ошибку, если есть зависимости от пакета (pgmig.pkg_required_by) и
     удалить зависимости от пакета
-  3. Зарегистрировать операцию в poma.pkg и poma.pkg_log
+  3. Зарегистрировать операцию в pgmig.pkg и pgmig.pkg_log
 */
 CREATE OR REPLACE FUNCTION pkg_op_before(
   a_op         t_pkg_op
@@ -146,13 +146,13 @@ $_$
   -- a_user_name:   имя пользователя 
   -- a_ssh_client:  ключ
   DECLARE
-    r_pkg          poma.pkg%ROWTYPE;
+    r_pkg          pgmig.pkg%ROWTYPE;
     r              RECORD;
     v_sql          TEXT;
     v_self_default TEXT;
     v_pkgs         TEXT;
   BEGIN
-    SELECT INTO r_pkg * FROM poma.pkg(a_code, a_schema);
+    SELECT INTO r_pkg * FROM pgmig.pkg(a_code, a_schema);
     IF FOUND THEN
       -- pkg already exists
       IF a_op::TEXT = ANY(ARRAY['create']) THEN
@@ -178,14 +178,14 @@ $_$
     END IF;
     CASE a_op
       WHEN 'create' THEN
-        INSERT INTO poma.pkg (id, code, schemas, log_name, user_name, ssh_client, op) VALUES 
-          (NEXTVAL('poma.pkg_id_seq'), a_code, ARRAY[a_schema], a_log_name, a_user_name, a_ssh_client, a_op)
+        INSERT INTO pgmig.pkg (id, code, schemas, log_name, user_name, ssh_client, op) VALUES 
+          (NEXTVAL('pgmig.pkg_id_seq'), a_code, ARRAY[a_schema], a_log_name, a_user_name, a_ssh_client, a_op)
           RETURNING * INTO r_pkg
         ;
-        INSERT INTO poma.pkg_log VALUES (r_pkg.*);
+        INSERT INTO pgmig.pkg_log VALUES (r_pkg.*);
       WHEN 'build' THEN
-        UPDATE poma.pkg SET
-          id            = NEXTVAL('poma.pkg_id_seq') -- runs after rule
+        UPDATE pgmig.pkg SET
+          id            = NEXTVAL('pgmig.pkg_id_seq') -- runs after rule
         , log_name    = a_log_name
         , user_name   = a_user_name
         , ssh_client  = a_ssh_client
@@ -195,28 +195,28 @@ $_$
           RETURNING * INTO r_pkg
         ;
         r_pkg.schemas = ARRAY[a_schema]; -- save schema in log
-        INSERT INTO poma.pkg_log VALUES (r_pkg.*);
+        INSERT INTO pgmig.pkg_log VALUES (r_pkg.*);
       WHEN 'drop', 'erase' THEN
-        IF a_code = 'poma' THEN
+        IF a_code = 'pgmig' THEN
           SELECT INTO v_pkgs
             array_to_string(array_agg(code::TEXT),', ')
-            FROM poma.pkg
+            FROM pgmig.pkg
             WHERE code <> a_code
           ;
         ELSE
           SELECT INTO v_pkgs
             array_to_string(array_agg(required_by::TEXT),', ')
-            FROM poma.pkg_required_by
+            FROM pgmig.pkg_required_by
             WHERE code = a_code
           ;
         END IF;
-        IF a_op = 'drop' AND a_code = 'poma' THEN
-          RAISE EXCEPTION '***************** Package poma does not support drop, only erase *****************';
+        IF a_op = 'drop' AND a_code = 'pgmig' THEN
+          RAISE EXCEPTION '***************** Package pgmig does not support drop, only erase *****************';
         END IF;
         IF v_pkgs IS NOT NULL THEN
           RAISE EXCEPTION '***************** Package % is required by others (%) *****************', a_code, v_pkgs;
         END IF;
-        PERFORM poma.pkg_references(FALSE, a_code, a_schema);
+        PERFORM pgmig.pkg_references(FALSE, a_code, a_schema);
     END CASE;
     RETURN a_code || '-' || a_op || '.psql';
   END;
@@ -226,7 +226,7 @@ $_$;
 /*
   Завершение выполнения операции с пакетом
 
-  1. create poma - Зарегистрировать операцию в poma.pkg и poma.pkg_log
+  1. create pgmig - Зарегистрировать операцию в pgmig.pkg и pgmig.pkg_log
   2. create - активировать зависимости
   3. erase - удалить зависимости
 */
@@ -248,43 +248,43 @@ $_$
   -- a_user_name:    имя пользователя
   -- a_ssh_client:   ключ
   DECLARE
-    r_pkg          poma.pkg%ROWTYPE;
+    r_pkg          pgmig.pkg%ROWTYPE;
     r              RECORD;
     v_sql          TEXT;
     v_self_default TEXT;
   BEGIN
-    r_pkg := poma.pkg(a_code);
+    r_pkg := pgmig.pkg(a_code);
     IF a_before IS NOT DISTINCT FROM a_blank THEN
       RETURN a_code || '-' || a_op || '.skipped';  -- for logs only
     END IF;
     CASE a_op
       WHEN 'create' THEN
         IF r_pkg IS NULL THEN
-          -- poma only
-          INSERT INTO poma.pkg (id, code, schemas, log_name, user_name, ssh_client, op) VALUES 
-            (NEXTVAL('poma.pkg_id_seq'), a_code, ARRAY[a_schema], a_log_name, a_user_name, a_ssh_client, a_op)
+          -- pgmig only
+          INSERT INTO pgmig.pkg (id, code, schemas, log_name, user_name, ssh_client, op) VALUES 
+            (NEXTVAL('pgmig.pkg_id_seq'), a_code, ARRAY[a_schema], a_log_name, a_user_name, a_ssh_client, a_op)
             RETURNING * INTO r_pkg
           ;
-          INSERT INTO poma.pkg_log VALUES (r_pkg.*);
+          INSERT INTO pgmig.pkg_log VALUES (r_pkg.*);
         END IF;
-        PERFORM poma.pkg_references(TRUE, a_code, a_schema);
-        UPDATE poma.pkg SET op = 'done' WHERE code = a_code;
+        PERFORM pgmig.pkg_references(TRUE, a_code, a_schema);
+        UPDATE pgmig.pkg SET op = 'done' WHERE code = a_code;
       WHEN 'drop', 'erase' THEN
-        INSERT INTO poma.pkg_log (id, code, schemas, log_name, user_name, ssh_client, op)
-          VALUES (NEXTVAL('poma.pkg_id_seq'), a_code, ARRAY[a_schema], a_log_name, a_user_name, a_ssh_client, a_op)
+        INSERT INTO pgmig.pkg_log (id, code, schemas, log_name, user_name, ssh_client, op)
+          VALUES (NEXTVAL('pgmig.pkg_id_seq'), a_code, ARRAY[a_schema], a_log_name, a_user_name, a_ssh_client, a_op)
         ;
         IF a_op = 'erase' THEN
-          DELETE FROM poma.pkg_script_protected  WHERE pkg = a_schema;
-          DELETE FROM poma.pkg_default_protected WHERE pkg = a_schema;
-          DELETE FROM poma.pkg_fkey_protected    WHERE pkg = a_schema;
-          DELETE FROM poma.pkg_fkey_required_by  WHERE required_by = a_schema;
+          DELETE FROM pgmig.pkg_script_protected  WHERE pkg = a_schema;
+          DELETE FROM pgmig.pkg_default_protected WHERE pkg = a_schema;
+          DELETE FROM pgmig.pkg_fkey_protected    WHERE pkg = a_schema;
+          DELETE FROM pgmig.pkg_fkey_required_by  WHERE required_by = a_schema;
         END IF;
-        DELETE FROM poma.pkg_required_by         WHERE required_by = a_schema;
+        DELETE FROM pgmig.pkg_required_by         WHERE required_by = a_schema;
         IF r_pkg.schemas = ARRAY[a_schema] THEN
           -- last/single schema
-          DELETE FROM poma.pkg WHERE code = a_code;
+          DELETE FROM pgmig.pkg WHERE code = a_code;
         ELSE  
-          UPDATE poma.pkg SET
+          UPDATE pgmig.pkg SET
             schemas = array_remove(schemas, a_schema)
             WHERE code = a_code
           ;
@@ -303,13 +303,13 @@ $_$
 DECLARE
   v_ver DECIMAL;
 BEGIN
-  SELECT INTO v_ver version FROM poma.pkg WHERE code = a_code;
+  SELECT INTO v_ver version FROM pgmig.pkg WHERE code = a_code;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Cannot get version of unknown package (%)', a_code;
   ELSIF v_ver > a_version THEN
     RAISE EXCEPTION 'Newest lib version (%) loaded already', v_ver;
   ELSIF v_ver < a_version THEN
-    UPDATE poma.pkg SET version = a_version WHERE code = a_code;
+    UPDATE pgmig.pkg SET version = a_version WHERE code = a_code;
   END IF;
 END
 $_$;
@@ -321,20 +321,20 @@ $_$
 DECLARE
   v_ver DECIMAL;
 BEGIN
-  SELECT INTO v_ver version FROM poma.pkg WHERE code = a_require;
+  SELECT INTO v_ver version FROM pgmig.pkg WHERE code = a_require;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Required by % package (%) does not exists', a_code, a_require;
   ELSIF v_ver < a_version THEN
     RAISE EXCEPTION 'Package (%) requires v% of %, but there is only v%', a_code, a_version, a_require, v_ver;
   END IF;
 
-  SELECT INTO v_ver version FROM poma.pkg_required_by WHERE required_by = a_code AND code = a_require;
+  SELECT INTO v_ver version FROM pgmig.pkg_required_by WHERE required_by = a_code AND code = a_require;
   IF NOT FOUND THEN
-    INSERT INTO poma.pkg_required_by (code, required_by, version)
+    INSERT INTO pgmig.pkg_required_by (code, required_by, version)
       VALUES (a_require, a_code, a_version)
     ;
   ELSIF v_ver < a_version THEN
-    UPDATE poma.pkg_required_by SET version = a_version
+    UPDATE pgmig.pkg_required_by SET version = a_version
       WHERE code = a_required AND required_by = a_code
     ;
   END IF;
@@ -358,10 +358,10 @@ BEGIN
     RAISE WARNING '%: no prefix % (%)', a_file, a_prefix, v_name;
     v_name := a_file;
   END IF;
-  SELECT INTO v_md5 csum FROM poma.pkg_script_protected WHERE pkg = a_pkg AND file = v_name;
+  SELECT INTO v_md5 csum FROM pgmig.pkg_script_protected WHERE pkg = a_pkg AND file = v_name;
   IF NOT FOUND THEN
     -- patch() вызывается в той же транзакции, что и сам файл
-    INSERT INTO poma.pkg_script_protected (pkg, file, csum) VALUES (a_pkg, v_name, a_md5);
+    INSERT INTO pgmig.pkg_script_protected (pkg, file, csum) VALUES (a_pkg, v_name, a_md5);
     RETURN a_file;
   ELSIF v_md5 <> a_md5 THEN
     RAISE WARNING '% md5 changed: from % to %', a_file, v_md5, a_md5;
