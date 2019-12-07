@@ -7,22 +7,20 @@
 */
 
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION pkg(a_code TEXT, a_schema TEXT DEFAULT NULL) RETURNS SETOF pkg STABLE LANGUAGE 'sql' AS
+CREATE OR REPLACE FUNCTION pkg(a_code TEXT) RETURNS SETOF pkg STABLE LANGUAGE 'sql' AS
 $_$
   -- a_code:  пакет
-  SELECT * FROM pgmig.pkg WHERE code = $1 AND (a_schema is NULL OR a_schema = ANY(schemas));
+  SELECT * FROM pgmig.pkg WHERE code = $1;
 $_$;
 
 -- ----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION pkg_references(
   a_is_on  BOOL
 , a_pkg    name
-, a_schema name DEFAULT NULL
 ) RETURNS SETOF TEXT VOLATILE LANGUAGE 'plpgsql' AS
 $_$
   -- a_is_on:  флаг активности
   -- a_pkg:    пакет
-  -- a_schema: связанная схема
   DECLARE
     r              RECORD;
     v_sql          TEXT;
@@ -32,7 +30,6 @@ $_$
     FOR r IN SELECT * 
       FROM pgmig.pkg_default_protected
       WHERE pkg = a_pkg
-        AND schema IS NOT DISTINCT FROM a_schema
         AND is_active = NOT a_is_on
     LOOP
       v_sql := CASE WHEN a_is_on THEN
@@ -59,7 +56,6 @@ $_$
     END IF;
     UPDATE pgmig.pkg_default_protected SET is_active = a_is_on
       WHERE pkg = a_pkg
-        AND schema IS NOT DISTINCT FROM a_schema
         AND is_active = NOT a_is_on
     ;
     
@@ -76,9 +72,9 @@ $_$
       WHERE is_active = NOT a_is_on
         AND CASE WHEN a_is_on THEN
           rel NOT IN (SELECT rel FROM pgmig.pkg_fkey_required_by WHERE required_by NOT IN (SELECT code FROM pgmig.pkg))
-            AND EXISTS (SELECT 1 FROM pgmig.pkg WHERE code = pkg) and EXISTS (SELECT 1 FROM pgmig.pkg where schemas @> array[pkg_fkey_protected.schema]::name[])
+            AND EXISTS (SELECT 1 FROM pgmig.pkg WHERE code = pkg) and EXISTS (SELECT 1 FROM pgmig.pkg where code = pkg_fkey_protected.pkg)
           ELSE
-          (pkg = a_pkg AND schema IS NOT DISTINCT FROM a_schema)
+          pkg = a_pkg
           OR rel IN (SELECT rel FROM pgmig.pkg_fkey_required_by WHERE required_by = a_pkg)
         END
     LOOP
@@ -109,9 +105,9 @@ $_$
       WHERE is_active = NOT a_is_on
         AND CASE WHEN a_is_on THEN
           rel NOT IN (SELECT rel FROM pgmig.pkg_fkey_required_by WHERE required_by NOT IN (SELECT code FROM pgmig.pkg))
-            AND EXISTS (SELECT 1 FROM pgmig.pkg WHERE code = pkg) and EXISTS (SELECT 1 FROM pgmig.pkg where schemas @> array[pkg_fkey_protected.schema]::name[])
+            AND EXISTS (SELECT 1 FROM pgmig.pkg WHERE code = pkg) and EXISTS (SELECT 1 FROM pgmig.pkg where code = pkg_fkey_protected.pkg)
           ELSE
-          (pkg = a_pkg AND schema IS NOT DISTINCT FROM a_schema)
+          (pkg = a_pkg)
           OR rel IN (SELECT rel FROM pgmig.pkg_fkey_required_by WHERE required_by = a_pkg)
         END
     ;
@@ -130,21 +126,12 @@ $_$;
   3. Зарегистрировать операцию в pgmig.pkg и pgmig.pkg_log
 */
 CREATE OR REPLACE FUNCTION pkg_op_before(
-  a_op         t_pkg_op
-, a_code       name
-, a_schema     name
-, a_log_name   TEXT
-, a_user_name  TEXT
-, a_ssh_client TEXT
-, a_blank      TEXT DEFAULT NULL
-) RETURNS TEXT VOLATILE LANGUAGE 'plpgsql' AS
+  a_op      t_pkg_op
+, a_code    name
+, a_version TEXT
+, a_repo    TEXT
+) RETURNS VOID VOLATILE LANGUAGE 'plpgsql' AS
 $_$
-  -- a_op:          стадия
-  -- a_code:        пакет 
-  -- a_schema:      список схем
-  -- a_log_name:    имя 
-  -- a_user_name:   имя пользователя 
-  -- a_ssh_client:  ключ
   DECLARE
     r_pkg          pgmig.pkg%ROWTYPE;
     r              RECORD;
@@ -152,73 +139,55 @@ $_$
     v_self_default TEXT;
     v_pkgs         TEXT;
   BEGIN
-    SELECT INTO r_pkg * FROM pgmig.pkg(a_code, a_schema);
-    IF FOUND THEN
-      -- pkg already exists
-      IF a_op::TEXT = ANY(ARRAY['create']) THEN
-        IF a_blank IS NULL THEN
-          RAISE EXCEPTION '***************** Package % schema % installed already at % (%) *****************'
-          , a_code, a_schema, r_pkg.stamp, r_pkg.id
-          ;
-        ELSE
-          RETURN a_blank;
-        END IF;
-      END IF;
-    ELSE
+    SELECT INTO r_pkg * FROM pgmig.pkg(a_code);
+    IF NOT FOUND THEN
       -- pkg does not exists
-      IF a_op::TEXT = ANY(ARRAY['build','drop','erase']) THEN
-        IF a_blank IS NULL THEN
-          RAISE EXCEPTION '***************** Package % schema % does not exists *****************'
-          , a_code, a_schema
-          ;
-        ELSE
-          RETURN a_blank;
-        END IF;
+      IF a_op <> 'init' THEN
+          RAISE EXCEPTION 'Package % does not exists, only init is possible', a_code;
+      ELSE
+        INSERT INTO pgmig.pkg (id, code, version, repo, op) VALUES 
+          (NEXTVAL('pgmig.pkg_id_seq'), a_code, a_version, a_repo, a_op)
+          RETURNING * INTO r_pkg
+        ;
+        INSERT INTO pgmig.pkg_log VALUES (r_pkg.*);
       END IF;
+      RETURN;
     END IF;
-    CASE a_op
-      WHEN 'create' THEN
-        INSERT INTO pgmig.pkg (id, code, schemas, log_name, user_name, ssh_client, op) VALUES 
-          (NEXTVAL('pgmig.pkg_id_seq'), a_code, ARRAY[a_schema], a_log_name, a_user_name, a_ssh_client, a_op)
-          RETURNING * INTO r_pkg
+
+    -- pkg already exists, update on init
+    IF a_op = 'init' THEN
+      UPDATE pgmig.pkg SET
+        id         = NEXTVAL('pgmig.pkg_id_seq') -- runs after rule
+      , version    = a_version
+      , repo       = a_repo
+      , updated_at = now()
+      , op         = a_op
+      WHERE code = a_code
+        RETURNING * INTO r_pkg
+      ;
+      INSERT INTO pgmig.pkg_log VALUES (r_pkg.*);
+    ELSIF a_op IN ('drop', 'erase') THEN
+      IF a_op = 'drop' AND a_code = 'pgmig' THEN
+        RAISE EXCEPTION 'Package pgmig does not support drop, only erase';
+      END IF;
+      IF a_code = 'pgmig' THEN
+        SELECT INTO v_pkgs
+          array_to_string(array_agg(code::TEXT),', ')
+          FROM pgmig.pkg
+          WHERE code <> a_code
         ;
-        INSERT INTO pgmig.pkg_log VALUES (r_pkg.*);
-      WHEN 'build' THEN
-        UPDATE pgmig.pkg SET
-          id            = NEXTVAL('pgmig.pkg_id_seq') -- runs after rule
-        , log_name    = a_log_name
-        , user_name   = a_user_name
-        , ssh_client  = a_ssh_client
-        , stamp       = now()
-        , op          = a_op
-        WHERE code = a_code
-          RETURNING * INTO r_pkg
+      ELSE
+        SELECT INTO v_pkgs
+          array_to_string(array_agg(required_by::TEXT),', ')
+          FROM pgmig.pkg_required_by
+          WHERE code = a_code
         ;
-        r_pkg.schemas = ARRAY[a_schema]; -- save schema in log
-        INSERT INTO pgmig.pkg_log VALUES (r_pkg.*);
-      WHEN 'drop', 'erase' THEN
-        IF a_code = 'pgmig' THEN
-          SELECT INTO v_pkgs
-            array_to_string(array_agg(code::TEXT),', ')
-            FROM pgmig.pkg
-            WHERE code <> a_code
-          ;
-        ELSE
-          SELECT INTO v_pkgs
-            array_to_string(array_agg(required_by::TEXT),', ')
-            FROM pgmig.pkg_required_by
-            WHERE code = a_code
-          ;
-        END IF;
-        IF a_op = 'drop' AND a_code = 'pgmig' THEN
-          RAISE EXCEPTION '***************** Package pgmig does not support drop, only erase *****************';
-        END IF;
-        IF v_pkgs IS NOT NULL THEN
-          RAISE EXCEPTION '***************** Package % is required by others (%) *****************', a_code, v_pkgs;
-        END IF;
-        PERFORM pgmig.pkg_references(FALSE, a_code, a_schema);
-    END CASE;
-    RETURN a_code || '-' || a_op || '.psql';
+      END IF;
+      IF v_pkgs IS NOT NULL THEN
+        RAISE EXCEPTION 'Package % is required by others (%)', a_code, v_pkgs;
+      END IF;
+      PERFORM pgmig.pkg_references(FALSE, a_code);
+    END IF;
   END;
 $_$;
 
@@ -226,27 +195,19 @@ $_$;
 /*
   Завершение выполнения операции с пакетом
 
-  1. create pgmig - Зарегистрировать операцию в pgmig.pkg и pgmig.pkg_log
-  2. create - активировать зависимости
+  1. init pgmig - Зарегистрировать операцию в pgmig.pkg и pgmig.pkg_log
+  2. init !pgmig - активировать зависимости
   3. erase - удалить зависимости
 */
 CREATE OR REPLACE FUNCTION pkg_op_after(
   a_op         t_pkg_op
 , a_code       name
-, a_schema     name
-, a_log_name   TEXT
-, a_user_name  TEXT
-, a_ssh_client TEXT
-, a_before     TEXT
-, a_blank      TEXT DEFAULT NULL
-) RETURNS TEXT VOLATILE LANGUAGE 'plpgsql' AS
+, a_version TEXT -- used only after pgmig init
+, a_repo    TEXT -- used only after pgmig init
+) RETURNS VOID VOLATILE LANGUAGE 'plpgsql' AS
 $_$
   -- a_op:           стадия
   -- a_code:         пакет
-  -- a_schema:       список схем
-  -- a_log_name:     имя
-  -- a_user_name:    имя пользователя
-  -- a_ssh_client:   ключ
   DECLARE
     r_pkg          pgmig.pkg%ROWTYPE;
     r              RECORD;
@@ -254,45 +215,31 @@ $_$
     v_self_default TEXT;
   BEGIN
     r_pkg := pgmig.pkg(a_code);
-    IF a_before IS NOT DISTINCT FROM a_blank THEN
-      RETURN a_code || '-' || a_op || '.skipped';  -- for logs only
-    END IF;
     CASE a_op
-      WHEN 'create' THEN
+      WHEN 'init' THEN
         IF r_pkg IS NULL THEN
           -- pgmig only
-          INSERT INTO pgmig.pkg (id, code, schemas, log_name, user_name, ssh_client, op) VALUES 
-            (NEXTVAL('pgmig.pkg_id_seq'), a_code, ARRAY[a_schema], a_log_name, a_user_name, a_ssh_client, a_op)
+          INSERT INTO pgmig.pkg (id, code, version, repo, op) VALUES 
+            (NEXTVAL('pgmig.pkg_id_seq'), a_code, a_version, a_repo, a_op)
             RETURNING * INTO r_pkg
           ;
           INSERT INTO pgmig.pkg_log VALUES (r_pkg.*);
         END IF;
-        PERFORM pgmig.pkg_references(TRUE, a_code, a_schema);
-        UPDATE pgmig.pkg SET op = 'done' WHERE code = a_code;
+        PERFORM pgmig.pkg_references(TRUE, a_code);
+        UPDATE pgmig.pkg SET updated_at = now() WHERE code = a_code;
       WHEN 'drop', 'erase' THEN
-        INSERT INTO pgmig.pkg_log (id, code, schemas, log_name, user_name, ssh_client, op)
-          VALUES (NEXTVAL('pgmig.pkg_id_seq'), a_code, ARRAY[a_schema], a_log_name, a_user_name, a_ssh_client, a_op)
-        ;
+        INSERT INTO pgmig.pkg_log (id, code, version, repo, op) VALUES 
+            (NEXTVAL('pgmig.pkg_id_seq'), a_code, a_version, a_repo, a_op);
         IF a_op = 'erase' THEN
-          DELETE FROM pgmig.pkg_script_protected  WHERE pkg = a_schema;
-          DELETE FROM pgmig.pkg_default_protected WHERE pkg = a_schema;
-          DELETE FROM pgmig.pkg_fkey_protected    WHERE pkg = a_schema;
-          DELETE FROM pgmig.pkg_fkey_required_by  WHERE required_by = a_schema;
+          DELETE FROM pgmig.pkg_script_protected  WHERE pkg = a_code;
+          DELETE FROM pgmig.pkg_default_protected WHERE pkg = a_code;
+          DELETE FROM pgmig.pkg_fkey_protected    WHERE pkg = a_code;
+          DELETE FROM pgmig.pkg_fkey_required_by  WHERE required_by = a_code;
         END IF;
-        DELETE FROM pgmig.pkg_required_by         WHERE required_by = a_schema;
-        IF r_pkg.schemas = ARRAY[a_schema] THEN
-          -- last/single schema
-          DELETE FROM pgmig.pkg WHERE code = a_code;
-        ELSE  
-          UPDATE pgmig.pkg SET
-            schemas = array_remove(schemas, a_schema)
-            WHERE code = a_code
-          ;
-        END IF;
-      WHEN 'build' THEN
-        NULL;
+        DELETE FROM pgmig.pkg_required_by         WHERE required_by = a_code;
+        DELETE FROM pgmig.pkg WHERE code = a_code;
     END CASE;
-    RETURN a_code || '-' || a_op || '.psql'; -- for logs only
+    RETURN; -- for logs only
   END;
 $_$;
 
