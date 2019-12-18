@@ -3,13 +3,13 @@
 */
 
 -- ----------------------------------------------------------------------------
-select assert_count(1);
+select pgmig.assert_count(1);
 
 /*
   Test comment schema
 */
 SELECT pgmig.comment('n','pgmig','Postgresql projects Makefile');
-SELECT assert_eq('t1'
+SELECT pgmig.assert_eq('t1'
 , (CASE WHEN (select obj_description(to_regnamespace('pgmig'))) = 'Postgresql projects Makefile' THEN TRUE ELSE FALSE END)
 , true
 );

@@ -1,14 +1,16 @@
 /*
     Тесты
 */
-
 SAVEPOINT test_begin;
-select assert_count(1);
+select pgmig.assert_count(1);
 -- ----------------------------------------------------------------------------
 SELECT pgmig.pkg_op_before('init', 'test_pgmig', 'v0.0', 'git');
-SELECT assert_eq('pkg_op_before'
-, (SELECT code FROM pgmig.pkg where code='test_pgmig')
-, 'test_pgmig'
+SELECT pgmig.assert_eq('pkg_op_before'
+, (SELECT jsonb_build_object('code',code,'version',version) FROM pgmig.pkg where code='test_pgmig')
+, '{
+        "version": "v0.0",
+        "code": "test_pgmig"
+   }'::jsonb
 );
 ROLLBACK TO SAVEPOINT test_begin;
 

@@ -5,13 +5,6 @@
 
     Таблицы для компилляции и установки пакетов
 */
--- -----------------------------------------------------------------------------
-DO $_$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 't_pkg_op') THEN
-    CREATE TYPE t_pkg_op AS ENUM ('init', 'drop', 'erase');
-  END IF;
-END$_$;
 
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS pkg_log (

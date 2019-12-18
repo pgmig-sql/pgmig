@@ -1,12 +1,8 @@
 /*
-    Copyright (c) 2018 Alexey Kovrizhkin <lekovr+poma@gmail.com>
-    Use of this source code is governed by a MIT-style
-    license that can be found in the LICENSE file.
-
     Create comment for database object
     SELECT comment('n|t|v|c|T|D|f|s', name, comment{, column, column_comment})
 
-    It is ok to add comment for column which does not exist - we will use it in future
+    It is ok to add comment for column which does not exist - this may be used in future
 */
 
 -- ----------------------------------------------------------------------------
@@ -143,5 +139,4 @@ $_$
     RETURN;
   END;
 $_$;
-
 SELECT comment('f', 'comment', 'Create comment for database object');

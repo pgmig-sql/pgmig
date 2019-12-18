@@ -167,9 +167,6 @@ $_$
       ;
       INSERT INTO pgmig.pkg_log VALUES (r_pkg.*);
     ELSIF a_op IN ('drop', 'erase') THEN
-      IF a_op = 'drop' AND a_code = 'pgmig' THEN
-        RAISE EXCEPTION 'Package pgmig does not support drop, only erase';
-      END IF;
       IF a_code = 'pgmig' THEN
         SELECT INTO v_pkgs
           array_to_string(array_agg(code::TEXT),', ')
@@ -244,7 +241,14 @@ $_$
 $_$;
 
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION pkg_version(a_code NAME, a_version DECIMAL)
+CREATE OR REPLACE FUNCTION pkg_version(a_code NAME)
+  RETURNS SETOF TEXT LANGUAGE 'sql' AS
+$_$
+SELECT version FROM pgmig.pkg WHERE code = $1
+$_$;
+
+-- ----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION current_version(a_code NAME, a_version DECIMAL)
   RETURNS VOID LANGUAGE 'plpgsql' AS
 $_$
 DECLARE
@@ -289,50 +293,22 @@ END
 $_$;
 
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION patch(
+CREATE OR REPLACE FUNCTION script_protected(
   a_pkg TEXT
-, a_md5 TEXT
 , a_file TEXT
-, a_prefix TEXT
-, a_blank TEXT DEFAULT 'blank.sql'
-) RETURNS TEXT LANGUAGE plpgsql AS $_$
-DECLARE
-  v_md5 TEXT;
-  v_name TEXT;
-BEGIN
-  v_name := substr(a_file, length(a_prefix) + 1);
-  IF (a_prefix || v_name) <> a_file THEN
-    RAISE WARNING '%: no prefix % (%)', a_file, a_prefix, v_name;
-    v_name := a_file;
-  END IF;
-  SELECT INTO v_md5 csum FROM pgmig.pkg_script_protected WHERE pkg = a_pkg AND file = v_name;
-  IF NOT FOUND THEN
-    -- patch() вызывается в той же транзакции, что и сам файл
-    INSERT INTO pgmig.pkg_script_protected (pkg, file, csum) VALUES (a_pkg, v_name, a_md5);
-    RETURN a_file;
-  ELSIF v_md5 <> a_md5 THEN
-    RAISE WARNING '% md5 changed: from % to %', a_file, v_md5, a_md5;
-  END IF;
-  RETURN a_blank;
-END;
-$_$; -- VOLATILE
-COMMENT ON FUNCTION patch(TEXT,TEXT,TEXT,TEXT,TEXT) IS 'Регистрация скриптов обновления БД';
+) RETURNS SETOF TEXT STABLE LANGUAGE sql AS $_$
+  SELECT csum FROM pgmig.pkg_script_protected WHERE pkg = a_pkg AND file = a_file;
+$_$;
 
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION test(a_code TEXT) RETURNS TEXT VOLATILE LANGUAGE 'plpgsql' AS
-$_$
-  -- a_code:  сообщение для теста
-  BEGIN
-    -- RAISE WARNING parsed for test output
-    IF a_code IS NULL THEN
-      RAISE WARNING '::';
-    ELSE
-      RAISE WARNING '::%', 't/'||a_code;
-    END IF;
-    -- RETURN saved to .md
-    RETURN a_code;
-  END;
+CREATE OR REPLACE FUNCTION script_protect(
+  a_pkg TEXT
+, a_file TEXT
+, a_md5 TEXT
+) RETURNS VOID VOLATILE LANGUAGE sql AS $_$
+    INSERT INTO pgmig.pkg_script_protected (pkg, file, csum) VALUES (a_pkg, a_file, a_md5);
 $_$;
+
 
 -- ----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION raise_on_errors(errors TEXT) RETURNS void LANGUAGE 'plpgsql' AS

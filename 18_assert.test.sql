@@ -1,12 +1,12 @@
-select assert_count(3);
+select pgmig.assert_count(3);
 
 SAVEPOINT test_begin;
 
-select assert_eq('first', 1, 1);
+select pgmig.assert_eq('first', 1, 1);
 
 ROLLBACK TO SAVEPOINT test_begin;
 
-select assert_eq('second', 2, 2);
+select pgmig.assert_eq('second', 2, 2);
 
 ROLLBACK TO SAVEPOINT test_begin;
 
@@ -15,7 +15,7 @@ ROLLBACK TO SAVEPOINT test_begin;
 
 ROLLBACK TO SAVEPOINT test_begin;
 
-select assert_eq('third'
+select pgmig.assert_eq('third'
 , 'Devops'::text
 , 'Devops'
 );
