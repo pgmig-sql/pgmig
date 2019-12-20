@@ -126,7 +126,7 @@ $_$;
   3. Зарегистрировать операцию в pgmig.pkg и pgmig.pkg_log
 */
 CREATE OR REPLACE FUNCTION pkg_op_before(
-  a_op      t_pkg_op
+  a_op      pgmig.t_pkg_op
 , a_code    name
 , a_version TEXT
 , a_repo    TEXT
@@ -144,13 +144,16 @@ $_$
       -- pkg does not exists
       IF a_op <> 'init' THEN
           RAISE EXCEPTION 'Package % does not exists, only init is possible', a_code;
-      ELSE
-        INSERT INTO pgmig.pkg (id, code, version, repo, op) VALUES 
-          (NEXTVAL('pgmig.pkg_id_seq'), a_code, a_version, a_repo, a_op)
-          RETURNING * INTO r_pkg
-        ;
-        INSERT INTO pgmig.pkg_log VALUES (r_pkg.*);
       END IF;
+      INSERT INTO pgmig.pkg (id, code, version, repo, op) VALUES
+        (NEXTVAL('pgmig.pkg_id_seq'), a_code, a_version, a_repo, a_op)
+        RETURNING * INTO r_pkg
+      ;
+      INSERT INTO pgmig.pkg_log VALUES (r_pkg.*);
+      IF NOT pgmig.schema_exists(a_code) THEN
+        EXECUTE format('CREATE SCHEMA IF NOT EXISTS %1$I', a_code);
+      END IF;
+      PERFORM pgmig.search_path_set(a_code);
       RETURN;
     END IF;
 
@@ -166,6 +169,7 @@ $_$
         RETURNING * INTO r_pkg
       ;
       INSERT INTO pgmig.pkg_log VALUES (r_pkg.*);
+      PERFORM pgmig.search_path_set(a_code);
     ELSIF a_op IN ('drop', 'erase') THEN
       IF a_code = 'pgmig' THEN
         SELECT INTO v_pkgs
@@ -197,7 +201,7 @@ $_$;
   3. erase - удалить зависимости
 */
 CREATE OR REPLACE FUNCTION pkg_op_after(
-  a_op         t_pkg_op
+  a_op         pgmig.t_pkg_op
 , a_code       name
 , a_version TEXT -- used only after pgmig init
 , a_repo    TEXT -- used only after pgmig init
@@ -235,8 +239,15 @@ $_$
         END IF;
         DELETE FROM pgmig.pkg_required_by         WHERE required_by = a_code;
         DELETE FROM pgmig.pkg WHERE code = a_code;
+        IF pgmig.schema_exists(a_code) THEN
+          IF pgmig.function_exists(a_code||'.cleanup(bool)') THEN
+            EXECUTE format('SELECT %1$I.cleanup($1)',a_code) USING (a_op = 'erase');
+          ELSE
+            EXECUTE format('DROP SCHEMA %1$I CASCADE', a_code);
+          END IF;
+        END IF;
     END CASE;
-    RETURN; -- for logs only
+    RETURN;
   END;
 $_$;
 
@@ -265,28 +276,36 @@ BEGIN
 END
 $_$;
 
+
+-- 1.2 -> 1.02, 1.20 -> 1.2, 1.02 -> 1.02
+CREATE OR REPLACE FUNCTION version2decimal(a_version TEXT) RETURNS DECIMAL IMMUTABLE LANGUAGE sql AS
+$_$
+  SELECT regexp_replace(substring(a_version from '^v(\d+\.\d+)'),'\.(\d)$','.0\1')::decimal;
+$_$;
+
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION pkg_require(a_code NAME, a_require NAME, a_version DECIMAL DEFAULT 0)
+CREATE OR REPLACE FUNCTION pkg_require(a_require NAME, a_version DECIMAL DEFAULT 0)
   RETURNS VOID LANGUAGE 'plpgsql' AS
 $_$
 DECLARE
+  v_code TEXT := current_schema();
   v_ver DECIMAL;
 BEGIN
-  SELECT INTO v_ver version FROM pgmig.pkg WHERE code = a_require;
+  SELECT INTO v_ver pgmig.version2decimal(version) FROM pgmig.pkg WHERE code = a_require;
   IF NOT FOUND THEN
-    RAISE EXCEPTION 'Required by % package (%) does not exists', a_code, a_require;
+    RAISE EXCEPTION 'Required by % package (%) does not exists', v_code, a_require;
   ELSIF v_ver < a_version THEN
-    RAISE EXCEPTION 'Package (%) requires v% of %, but there is only v%', a_code, a_version, a_require, v_ver;
+    RAISE EXCEPTION 'Package (%) requires v% of %, but there is only v%', v_code, a_version, a_require, v_ver;
   END IF;
 
-  SELECT INTO v_ver version FROM pgmig.pkg_required_by WHERE required_by = a_code AND code = a_require;
+  SELECT INTO v_ver version FROM pgmig.pkg_required_by WHERE required_by = v_code AND code = a_require;
   IF NOT FOUND THEN
     INSERT INTO pgmig.pkg_required_by (code, required_by, version)
-      VALUES (a_require, a_code, a_version)
+      VALUES (a_require, v_code, a_version)
     ;
   ELSIF v_ver < a_version THEN
     UPDATE pgmig.pkg_required_by SET version = a_version
-      WHERE code = a_required AND required_by = a_code
+      WHERE code = a_required AND required_by = v_code
     ;
   END IF;
 END
