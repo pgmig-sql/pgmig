@@ -1,4 +1,4 @@
-# sql-pgmig - SQL par of pgmig project
+# sql-pgmig - SQL part of pgmig project
 
 ## Usage
 
